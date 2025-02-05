@@ -7,6 +7,9 @@ import { sepolia } from 'viem/chains'
 import { waitForTransactionReceipt } from 'viem/actions'
 import semverSatisfies from 'semver/functions/satisfies'
 
+import * as dotenv from 'dotenv'
+dotenv.config()
+
 // This file can be used to play around with the Safe Core SDK
 
 interface Config {
@@ -20,11 +23,15 @@ interface Config {
   }
 }
 
+const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_ADDRESS_PRIVATE_KEY!
+
+const account = privateKeyToAccount(`0x${DEPLOYER_PRIVATE_KEY}`)
+
 const config: Config = {
-  RPC_URL: sepolia.rpcUrls.default.http[0],
-  DEPLOYER_ADDRESS_PRIVATE_KEY: '<DEPLOYER_ADDRESS_PRIVATE_KEY>',
+  RPC_URL: process.env.RPC_URL!,
+  DEPLOYER_ADDRESS_PRIVATE_KEY: DEPLOYER_PRIVATE_KEY,
   DEPLOY_SAFE: {
-    OWNERS: ['OWNER_ADDRESS'],
+    OWNERS: [account.address],
     THRESHOLD: 1, // <SAFE_THRESHOLD>
     SALT_NONCE: '150000',
     SAFE_VERSION: '1.3.0'
@@ -72,8 +79,6 @@ async function main() {
   const deploymentTransaction = await protocolKit.createSafeDeploymentTransaction()
 
   console.log('deploymentTransaction: ', deploymentTransaction)
-
-  const account = privateKeyToAccount(`0x${config.DEPLOYER_ADDRESS_PRIVATE_KEY}`)
 
   const client = createWalletClient({
     account,
