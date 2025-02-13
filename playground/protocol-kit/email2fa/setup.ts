@@ -7,6 +7,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { baseSepolia } from 'viem/chains'
 import { waitForTransactionReceipt } from 'viem/actions'
 import semverSatisfies from 'semver/functions/satisfies'
+import { EMAIL_SIGNER_FACTORY_ABI, EMAIL_SIGNER_ABI } from './abi'
 import fs from 'fs'
 
 import * as dotenv from 'dotenv'
@@ -54,11 +55,9 @@ async function main() {
     transport: http(RPC_URL)
   })
 
-  const emailSignerFactoryAbi = JSON.parse(fs.readFileSync('playground/protocol-kit/email-signer-factory-abi.json', 'utf8'))
-
   const emailSignerFactory = getContract({
     address: '0xA7DEc2DC5153275E5d90A7d59F3C7B1DEff6E4b2',
-    abi: emailSignerFactoryAbi,
+    abi: EMAIL_SIGNER_FACTORY_ABI,
     client
   })
 
@@ -204,20 +203,20 @@ async function main() {
     console.log('Requesting email signature from relayer...')
 
     // Get the transaction hash that needs to be signed
-    const txHashToSign = safeTxHash
+    const txHashToSign = BigInt(safeTxHash)
 
     const emailSigner = getContract({
       address: emailSignerAddress,
-      abi: JSON.parse(fs.readFileSync('playground/protocol-kit/email-signer-abi.json', 'utf8')),
+      abi: EMAIL_SIGNER_ABI,
       client
     })
 
     // Get templateId from email signer contract
-    const templateId = await emailSigner.read.templateId([])
+    const templateId = `0x${((await emailSigner.read.templateId([])) as bigint).toString(16)}`
 
     console.log('Template ID:', templateId)
-
-    return
+    console.log('DKIM Contract Address:', await emailSigner.read.dkimRegistryAddr())
+    console.log('txHashToSign:', txHashToSign.toString())
 
     const relayerResponse = await fetch('https://relayer.zk.email/api/submit', {
       method: 'POST',
@@ -225,12 +224,12 @@ async function main() {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        dkimContractAddress: "0x56D6d4c18a0B9dE27699c5f9aCa3378313e228C4", // Get from Safe contract
+        dkimContractAddress: await emailSigner.read.dkimRegistryAddr(), // Get from Safe contract
         accountCode: accountCode, // Use the actual tx hash
         codeExistsInEmail: true,
         commandTemplate: 'signHash {uint}',
-        commandParams: [BigInt(txHashToSign)], // Use the actual tx hash as bigint
-        templateId: BigInt("63029648564390617484588365829626736364829479039945858919164890330625807687445").toString(16), // Generate unique template ID
+        commandParams: [txHashToSign.toString()], // Use the actual tx hash as bigint
+        templateId: templateId, // Generate unique template ID
         emailAddress: email, // This could be fetched from config/env
         subject: 'Safe Transaction Signature Request',
         body: `Please sign the safe transaction`,
@@ -244,6 +243,34 @@ async function main() {
 
     const emailSignature = await relayerResponse.json()
     console.log('Email signature received:', emailSignature)
+
+    // Extract the email proof ID from the response
+    const emailProofId = emailSignature.id
+    console.log('Email proof ID:', emailProofId)
+
+    // Poll the status endpoint until we get the proof
+    console.log('Waiting for email proof...')
+    let emailProof
+    while (!emailProof) {
+      const statusResponse = await fetch(`http://relayer.zk.email/api/status/${emailProofId}`)
+      if (!statusResponse.ok) {
+        throw new Error(`Failed to get proof status: ${await statusResponse.text()}`)
+      }
+      const status = await statusResponse.json()
+
+      if (status.error) {
+        throw new Error(`Error getting proof: ${status.error}`)
+      }
+
+      if (status.proof) {
+        emailProof = status.proof
+        console.log('Email proof received:', emailProof)
+        break
+      }
+
+      // Wait 2 seconds before polling again
+      await new Promise(resolve => setTimeout(resolve, 2000))
+    }
 
     // const signedSafeTx = await protocolKit.signTransaction(safeTransaction)
     // const executeTxResponse = await protocolKit.executeTransaction(signedSafeTx)
