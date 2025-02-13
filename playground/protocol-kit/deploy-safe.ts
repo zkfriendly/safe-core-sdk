@@ -76,14 +76,16 @@ async function main() {
   })
   console.log('emailSignerAddress: ', emailSignerAddress)
 
-  console.log('Email signer contract deployed:', bytecode !== undefined && bytecode !== '0x')
+  let isEmailSignerDeployed = bytecode !== undefined && bytecode !== '0x'
+  console.log('Email signer contract deployed:', isEmailSignerDeployed)
 
   // Deploy email signer if not already deployed
-  if (bytecode === '0x' || bytecode === undefined) {
+  if (!isEmailSignerDeployed) {
     console.log('Deploying email signer contract...')
     const deployTx = await emailSignerFactory.write.deploy([accountSalt])
-    console.log('deployTx: ', deployTx)
+    await waitForTransactionReceipt(client, { hash: deployTx })
     console.log('Email signer contract deployed successfully')
+    isEmailSignerDeployed = true
   } else {
     console.log('Email signer contract already deployed')
   }
@@ -125,43 +127,41 @@ async function main() {
 
   // The Account Abstraction feature is only available for Safes version 1.3.0 and above.
   if (semverSatisfies(safeVersion, '>=1.3.0')) {
-    // check if its deployed
-    console.log('Safe Account deployed: ', await protocolKit.isSafeDeployed())
+
+    const isSafeDeployed = await protocolKit.isSafeDeployed()
+    console.log('Safe Account deployed: ', isSafeDeployed)
 
     // Predict deployed address
     const predictedSafeAddress = await protocolKit.getAddress()
     console.log('Predicted Safe address:', predictedSafeAddress)
+
+    if (!isSafeDeployed) {
+      console.log('Deploying Safe Account...')
+      // Deploy the Safe account
+      const deploymentTransaction = await protocolKit.createSafeDeploymentTransaction()
+      console.log('deploymentTransaction: ', deploymentTransaction)
+
+      const txHash = await client.sendTransaction({
+        to: deploymentTransaction.to,
+        value: BigInt(deploymentTransaction.value),
+        data: deploymentTransaction.data as `0x${string}`
+      })
+
+      console.log('Transaction hash:', txHash)
+
+      const txReceipt = await waitForTransactionReceipt(client, { hash: txHash })
+      const safeAddress = getSafeAddressFromDeploymentTx(txReceipt, safeVersion)
+      console.log('safeAddress:', safeAddress)
+
+      // Connect to the newly deployed Safe
+      protocolKit.connect({ safeAddress })
+    }
+
+    // Only log Safe details if it's deployed
+    console.log('Safe Address:', await protocolKit.getAddress())
+    console.log('Safe Owners:', await protocolKit.getOwners())
+    console.log('Safe Threshold:', await protocolKit.getThreshold())
   }
-
-  console.log('Deploying Safe Account...')
-
-  // Deploy the Safe account
-  const deploymentTransaction = await protocolKit.createSafeDeploymentTransaction()
-
-  console.log('deploymentTransaction: ', deploymentTransaction)
-
-
-  const txHash = await client.sendTransaction({
-    to: deploymentTransaction.to,
-    value: BigInt(deploymentTransaction.value),
-    data: deploymentTransaction.data as `0x${string}`
-  })
-
-  console.log('Transaction hash:', txHash)
-
-  const txReceipt = await waitForTransactionReceipt(client, { hash: txHash })
-
-  const safeAddress = getSafeAddressFromDeploymentTx(txReceipt, safeVersion)
-
-  console.log('safeAddress:', safeAddress)
-
-  // now you can use the Safe address in the instance of the protocol-kit
-  protocolKit.connect({ safeAddress })
-
-  console.log('is Safe deployed:', await protocolKit.isSafeDeployed())
-  console.log('Safe Address:', await protocolKit.getAddress())
-  console.log('Safe Owners:', await protocolKit.getOwners())
-  console.log('Safe Threshold:', await protocolKit.getThreshold())
 }
 
 main()
