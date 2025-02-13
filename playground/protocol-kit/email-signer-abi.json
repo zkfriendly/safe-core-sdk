@@ -1,0 +1,140 @@
+[
+    {
+        "type": "constructor",
+        "inputs": [
+            {
+                "name": "_implementation",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_dkimRegistry",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_verifier",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "deploy",
+        "inputs": [
+            {
+                "name": "accountSalt",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "dkimRegistry",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "implementation",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "predictAddress",
+        "inputs": [
+            {
+                "name": "accountSalt",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "verifier",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "event",
+        "name": "EmailSignerDeployed",
+        "inputs": [
+            {
+                "name": "emailSigner",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "accountSalt",
+                "type": "bytes32",
+                "indexed": true,
+                "internalType": "bytes32"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "error",
+        "name": "FailedDeployment",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "InsufficientBalance",
+        "inputs": [
+            {
+                "name": "balance",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "needed",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ]
+    }
+]
