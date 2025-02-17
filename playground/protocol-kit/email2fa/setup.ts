@@ -9,6 +9,7 @@ import { waitForTransactionReceipt } from 'viem/actions'
 import semverSatisfies from 'semver/functions/satisfies'
 import { EMAIL_SIGNER_FACTORY_ABI, EMAIL_SIGNER_ABI } from './abi'
 import fs from 'fs'
+import path from 'path'
 
 import * as dotenv from 'dotenv'
 dotenv.config()
@@ -30,6 +31,14 @@ const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_ADDRESS_PRIVATE_KEY!
 const RPC_URL = process.env.RPC_URL!
 const RELAYER_URL = 'http://127.0.0.1:8000'
 const EMAIL_SIGNER_FACTORY_ADDRESS = '0x8eFd67b5779a9eD57e464Da18Fd207DBDDB6531f'
+const ENABLE_LOGS = true // Easy kill switch for logs
+const PROOFS_CACHE_DIR = path.join(__dirname, 'proofs-cache')
+
+const log = (...args: any[]) => {
+  if (ENABLE_LOGS) {
+    console.log(...args)
+  }
+}
 
 const account = privateKeyToAccount(`0x${DEPLOYER_PRIVATE_KEY}`)
 
@@ -37,8 +46,104 @@ const email = "snparvizi75@gmail.com"
 // any random 32 bytes value works
 const accountCode = "0x22a2d51a892f866cf3c6cc4e138ba87a8a5059a1d80dea5b8ee8232034a105b7"
 
-async function main() {
+// Create cache directory if it doesn't exist
+if (!fs.existsSync(PROOFS_CACHE_DIR)) {
+  fs.mkdirSync(PROOFS_CACHE_DIR, { recursive: true })
+}
 
+async function getOrGenerateProof(txNonce: string, txHashToSign: bigint, templateId: string) {
+  const cacheFile = path.join(PROOFS_CACHE_DIR, `proof-${txNonce}.json`)
+
+  // Check if proof exists in cache
+  if (fs.existsSync(cacheFile)) {
+    log('Found cached proof for nonce:', txNonce)
+    const cachedProof = JSON.parse(fs.readFileSync(cacheFile, 'utf8'))
+    return cachedProof
+  }
+
+  log('Generating new proof for nonce:', txNonce)
+
+  // Request new proof from relayer
+  const relayerResponse = await fetch(`${RELAYER_URL}/api/submit`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      accountCode: accountCode,
+      codeExistsInEmail: true,
+      commandTemplate: 'signHash {uint}',
+      commandParams: [txHashToSign.toString()],
+      templateId: templateId,
+      emailAddress: email,
+      subject: 'Safe Transaction Signature Request',
+      body: `Please sign the safe transaction`,
+    })
+  })
+
+  if (!relayerResponse.ok) {
+    throw new Error(`Failed to get email signature: ${await relayerResponse.text()}`)
+  }
+
+  const emailSignature = await relayerResponse.json()
+  const emailProofId = emailSignature.id
+
+  // Poll for proof
+  let emailAuthMsg;
+  let retries = 0
+  const maxRetries = 100
+  while (!emailAuthMsg && retries < maxRetries) {
+    try {
+      const statusResponse = await fetch(`${RELAYER_URL}/api/status/${emailProofId}`)
+
+      if (!statusResponse.ok) {
+        const errorText = await statusResponse.text()
+        throw new Error(`Failed to get proof status: ${errorText}`)
+      }
+
+      const status = await statusResponse.json()
+
+      if (status.error) {
+        throw new Error(`Error getting proof: ${status.error}`)
+      }
+
+      if (status.response) {
+        emailAuthMsg = status.response
+        break
+      }
+
+      retries++
+      await new Promise(resolve => setTimeout(resolve, 2000))
+
+    } catch (error) {
+      retries++
+      await new Promise(resolve => setTimeout(resolve, 2000))
+    }
+  }
+
+  if (!emailAuthMsg) {
+    throw new Error('Timed out waiting for email proof')
+  }
+
+  // Cache the proof
+  fs.writeFileSync(cacheFile, JSON.stringify(emailAuthMsg))
+
+  return emailAuthMsg
+}
+
+const client = createWalletClient({
+  account,
+  chain: baseSepolia,
+  transport: http(RPC_URL)
+})
+
+// Check if there is already a contract deployed at the email signer address
+const publicClient = createPublicClient({
+  chain: baseSepolia,
+  transport: http(RPC_URL)
+})
+
+async function getOrDeployEmailSigner(accountCode: string, email: string) {
   // first get the salt 
   const { accountSalt } = await fetch(`${RELAYER_URL}/api/accountSalt`, {
     method: 'POST',
@@ -51,12 +156,7 @@ async function main() {
     })
   }).then(res => res.json())
 
-  console.log('emailAccountSalt: ', accountSalt)
-  const client = createWalletClient({
-    account,
-    chain: baseSepolia,
-    transport: http(RPC_URL)
-  })
+  log('emailAccountSalt: ', accountSalt)
 
   const emailSignerFactory = getContract({
     address: EMAIL_SIGNER_FACTORY_ADDRESS,
@@ -67,31 +167,29 @@ async function main() {
   // get the address of the email signer
   const emailSignerAddress = await emailSignerFactory.read.predictAddress([accountSalt]) as `0x${string}`
 
-  // Check if there is already a contract deployed at the email signer address
-  const publicClient = createPublicClient({
-    chain: baseSepolia,
-    transport: http(RPC_URL)
-  })
-
   const bytecode = await publicClient.getCode({
     address: emailSignerAddress
   })
-  console.log('emailSignerAddress: ', emailSignerAddress)
+  log('emailSignerAddress: ', emailSignerAddress)
 
   let isEmailSignerDeployed = bytecode !== undefined && bytecode !== '0x'
-  console.log('Email signer contract deployed:', isEmailSignerDeployed)
+  log('Email signer contract deployed:', isEmailSignerDeployed)
 
   // Deploy email signer if not already deployed
   if (!isEmailSignerDeployed) {
-    console.log('Deploying email signer contract...')
+    log('Deploying email signer contract...')
     const deployTx = await emailSignerFactory.write.deploy([accountSalt])
     await waitForTransactionReceipt(client, { hash: deployTx })
-    console.log('Email signer contract deployed successfully')
+    log('Email signer contract deployed successfully')
     isEmailSignerDeployed = true
   } else {
-    console.log('Email signer contract already deployed')
+    log('Email signer contract already deployed')
   }
 
+  return emailSignerAddress
+}
+
+async function setupSafe(emailSignerAddress: string) {
   const config: Config = {
     RPC_URL: process.env.RPC_URL!,
     DEPLOYER_ADDRESS_PRIVATE_KEY: DEPLOYER_PRIVATE_KEY,
@@ -103,7 +201,7 @@ async function main() {
     }
   }
 
-  console.log('Safe Account config: ', config.DEPLOY_SAFE)
+  log('Safe Account config: ', config.DEPLOY_SAFE)
 
   // Config of the deployed Safe
   const safeAccountConfig: SafeAccountConfig = {
@@ -115,7 +213,7 @@ async function main() {
   const saltNonce = config.DEPLOY_SAFE.SALT_NONCE
 
   // protocol-kit instance creation
-  const protocolKit = await Safe.init({
+  let protocolKit = await Safe.init({
     provider: config.RPC_URL,
     signer: config.DEPLOYER_ADDRESS_PRIVATE_KEY,
     predictedSafe: {
@@ -131,17 +229,17 @@ async function main() {
   if (semverSatisfies(safeVersion, '>=1.3.0')) {
 
     const isSafeDeployed = await protocolKit.isSafeDeployed()
-    console.log('Safe Account deployed: ', isSafeDeployed)
+    log('Safe Account deployed: ', isSafeDeployed)
 
     // Predict deployed address
     const predictedSafeAddress = await protocolKit.getAddress()
-    console.log('Predicted Safe address:', predictedSafeAddress)
+    log('Predicted Safe address:', predictedSafeAddress)
 
     if (!isSafeDeployed) {
-      console.log('Deploying Safe Account...')
+      log('Deploying Safe Account...')
       // Deploy the Safe account
       const deploymentTransaction = await protocolKit.createSafeDeploymentTransaction()
-      console.log('deploymentTransaction: ', deploymentTransaction)
+      log('deploymentTransaction: ', deploymentTransaction)
 
       const txHash = await client.sendTransaction({
         to: deploymentTransaction.to,
@@ -149,212 +247,142 @@ async function main() {
         data: deploymentTransaction.data as `0x${string}`
       })
 
-      console.log('Transaction hash:', txHash)
+      log('Transaction hash:', txHash)
 
       const txReceipt = await waitForTransactionReceipt(client, { hash: txHash })
       const safeAddress = getSafeAddressFromDeploymentTx(txReceipt, safeVersion)
-      console.log('safeAddress:', safeAddress)
-
-      // Connect to the newly deployed Safe
-      protocolKit.connect({ safeAddress })
+      log('safeAddress:', safeAddress)
     }
-
-    // Only log Safe details if it's deployed
-    console.log('Safe Address:', await protocolKit.getAddress())
-    console.log('Safe Owners:', await protocolKit.getOwners())
-    console.log('Safe Threshold:', await protocolKit.getThreshold())
-
-    // Check Safe balance and deposit initial funds if needed
-    const safeBalance = await publicClient.getBalance({ address: await protocolKit.getAddress() })
-
-    if (safeBalance === 0n) {
-      console.log('Safe balance is zero, depositing initial funds...')
-      const depositTx = await client.sendTransaction({
-        to: await protocolKit.getAddress(),
-        value: parseEther('0.001')
-      })
-      console.log('Deposit transaction hash:', depositTx)
-      await waitForTransactionReceipt(client, { hash: depositTx })
-      console.log('Initial funds deposited successfully')
-    }
-
-    // Create and execute a test transfer transaction
-    console.log('Creating test transfer transaction...')
-    const owners = await protocolKit.getOwners()
-    const destinationAddress = owners[0] // Send to first owner
-    const transferAmount = parseEther('0.0001') // Transfer a small amount
-
-    const safeTransactionData: SafeTransactionDataPartial = {
-      to: destinationAddress,
-      data: '0x',
-      value: transferAmount.toString()
-    }
-
-    // Create the transaction
-    const safeTransaction = await protocolKit.createTransaction({ transactions: [safeTransactionData] })
-    console.log('Transaction created:', safeTransaction)
-
-    // Sign transaction with first signer
-    const signedSafeTx = await protocolKit.signTransaction(safeTransaction)
-    console.log('Transaction signed by first signer:', signedSafeTx)
-
-    // Get transaction hash that other signers can use to sign
-    const safeTxHash = await protocolKit.getTransactionHash(safeTransaction)
-    console.log('Transaction hash for other signers:', safeTxHash)
-
-    // Request email signature from relayer
-    console.log('Requesting email signature from relayer...')
-
-    // Get the transaction hash that needs to be signed
-    const txHashToSign = BigInt(safeTxHash)
-
-    const emailSigner = getContract({
-      address: emailSignerAddress,
-      abi: EMAIL_SIGNER_ABI,
-      client
-    })
-
-    // Get templateId from email signer contract
-    const templateId = `0x${((await emailSigner.read.templateId([])) as bigint).toString(16)}`
-
-    console.log('Template ID:', templateId)
-    console.log('DKIM Contract Address:', await emailSigner.read.dkimRegistryAddr())
-    console.log('txHashToSign:', txHashToSign.toString())
-
-    const relayerResponse = await fetch(`${RELAYER_URL}/api/submit`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        accountCode: accountCode, // Use the actual tx hash
-        codeExistsInEmail: true,
-        commandTemplate: 'signHash {uint}',
-        commandParams: [txHashToSign.toString()], // Use the actual tx hash as bigint
-        templateId: templateId, // Generate unique template ID
-        emailAddress: email, // This could be fetched from config/env
-        subject: 'Safe Transaction Signature Request',
-        body: `Please sign the safe transaction`,
-      })
-    })
-
-    if (!relayerResponse.ok) {
-      throw new Error(`Failed to get email signature: ${await relayerResponse.text()}`)
-    }
-
-    const emailSignature = await relayerResponse.json()
-    console.log('Email signature received:', emailSignature)
-
-    // Extract the email proof ID from the response
-    const emailProofId = emailSignature.id
-    console.log('Email proof ID:', emailProofId)
-
-    // Poll the status endpoint until we get the proof
-    console.log('Waiting for email proof...')
-    let emailAuthMsg;
-    let retries = 0
-    const maxRetries = 100 // 1 minute maximum wait time
-    while (!emailAuthMsg && retries < maxRetries) {
-      try {
-        const statusResponse = await fetch(`${RELAYER_URL}/api/status/${emailProofId}`)
-
-        if (!statusResponse.ok) {
-          const errorText = await statusResponse.text()
-          throw new Error(`Failed to get proof status: ${errorText}`)
-        }
-
-        const status = await statusResponse.json()
-
-        if (status.error) {
-          throw new Error(`Error getting proof: ${status.error}`)
-        }
-
-        if (status.response) {
-          emailAuthMsg = status.response
-          break
-        }
-
-        retries++
-        await new Promise(resolve => setTimeout(resolve, 2000))
-
-      } catch (error) {
-        retries++
-        await new Promise(resolve => setTimeout(resolve, 2000))
-      }
-    }
-
-    if (!emailAuthMsg) {
-      throw new Error('Timed out waiting for email proof')
-    }
-
-    console.log('Email auth message received:', emailAuthMsg)
-
-    // Encode the email auth message according to the ABI structure
-    // First encode the EmailProof struct
-    const encodedEmailProof = encodeAbiParameters(
-      [{
-        type: 'tuple',
-        components: [
-          { type: 'string', name: 'domainName' },
-          { type: 'bytes32', name: 'publicKeyHash' },
-          { type: 'uint256', name: 'timestamp' },
-          { type: 'string', name: 'maskedCommand' },
-          { type: 'bytes32', name: 'emailNullifier' },
-          { type: 'bytes32', name: 'accountSalt' },
-          { type: 'bool', name: 'isCodeExist' },
-          { type: 'bytes', name: 'proof' }
-        ]
-      }],
-      [{
-        domainName: emailAuthMsg.proof.domainName,
-        publicKeyHash: emailAuthMsg.proof.publicKeyHash,
-        timestamp: emailAuthMsg.proof.timestamp,
-        maskedCommand: emailAuthMsg.proof.maskedCommand,
-        emailNullifier: emailAuthMsg.proof.emailNullifier,
-        accountSalt: emailAuthMsg.proof.accountSalt,
-        isCodeExist: emailAuthMsg.proof.isCodeExist,
-        proof: emailAuthMsg.proof.proof
-      }]
-    )
-
-    // Then encode the full EmailAuthMsg struct
-    const encodedEmailAuthMsg = encodeAbiParameters(
-      [{
-        type: 'tuple',
-        components: [
-          { type: 'uint256', name: 'templateId' },
-          { type: 'bytes[]', name: 'commandParams' },
-          { type: 'uint256', name: 'skippedCommandPrefix' },
-          {
-            type: 'tuple',
-            name: 'proof',
-            components: [
-              { type: 'string', name: 'domainName' },
-              { type: 'bytes32', name: 'publicKeyHash' },
-              { type: 'uint256', name: 'timestamp' },
-              { type: 'string', name: 'maskedCommand' },
-              { type: 'bytes32', name: 'emailNullifier' },
-              { type: 'bytes32', name: 'accountSalt' },
-              { type: 'bool', name: 'isCodeExist' },
-              { type: 'bytes', name: 'proof' }
-            ]
-          }
-        ]
-      }],
-      [{
-        templateId: emailAuthMsg.templateId,
-        commandParams: emailAuthMsg.commandParams,
-        skippedCommandPrefix: emailAuthMsg.skippedCommandPrefix,
-        proof: emailAuthMsg.proof
-      }]
-    )
-
-    console.log('Encoded email auth message:', encodedEmailAuthMsg)
-
-    const isValidSignature = await emailSigner.read.isValidSignature([safeTxHash, encodedEmailAuthMsg])
-    console.log('isValidSignature:', isValidSignature)
-
   }
+
+  // Reinitialize the Safe instance regardless of whether it was just deployed or already existed
+  protocolKit = await Safe.init({
+    provider: config.RPC_URL,
+    signer: config.DEPLOYER_ADDRESS_PRIVATE_KEY,
+    safeAddress: await protocolKit.getAddress()
+  })
+
+  // Only log Safe details if it's deployed
+  log('Safe Address:', await protocolKit.getAddress())
+  log('Safe Owners:', await protocolKit.getOwners())
+  log('Safe Threshold:', await protocolKit.getThreshold())
+
+  return protocolKit
+}
+async function depositInitialFunds(protocolKit: Safe) {
+  // Check Safe balance and deposit initial funds if needed
+  const safeBalance = await publicClient.getBalance({ address: await protocolKit.getAddress() })
+
+  if (safeBalance === 0n) {
+    log('Safe balance is zero, depositing initial funds...')
+    const depositTx = await client.sendTransaction({
+      to: await protocolKit.getAddress(),
+      value: parseEther('0.001')
+    })
+    log('Deposit transaction hash:', depositTx)
+    await waitForTransactionReceipt(client, { hash: depositTx })
+    log('Initial funds deposited successfully')
+  }
+}
+async function createTestTransaction(safeInstance: Safe) {
+  // Create and execute a test transfer transaction
+  log('Creating test transfer transaction...')
+  const owners = await safeInstance.getOwners()
+  const destinationAddress = owners[0] // Send to first owner
+  const transferAmount = parseEther('0.0001') // Transfer a small amount
+
+  const safeTransactionData: SafeTransactionDataPartial = {
+    to: destinationAddress,
+    data: '0x',
+    value: transferAmount.toString()
+  }
+
+  // Create the transaction
+  const safeTransaction = await safeInstance.createTransaction({ transactions: [safeTransactionData] })
+  log('Transaction created:', safeTransaction)
+  return safeTransaction
+}
+
+async function getEmailSignature(safeTransaction: any, emailSignerAddress: string, safeTxHash: string) {
+  // Get the transaction hash that needs to be signed
+  const txHashToSign = BigInt(safeTxHash)
+
+  const emailSigner = getContract({
+    address: emailSignerAddress,
+    abi: EMAIL_SIGNER_ABI,
+    client
+  })
+
+  // Get templateId from email signer contract
+  const templateId = `0x${((await emailSigner.read.templateId([])) as bigint).toString(16)}`
+
+  log('Template ID:', templateId)
+  log('DKIM Contract Address:', await emailSigner.read.dkimRegistryAddr())
+  log('txHashToSign:', txHashToSign.toString())
+
+  // Get or generate proof using transaction nonce as cache key
+  const emailAuthMsg = await getOrGenerateProof(safeTransaction.data.nonce.toString(), txHashToSign, templateId)
+
+  log('Email auth message received:', emailAuthMsg)
+
+  // Then encode the full EmailAuthMsg struct
+  const smartContractSignature = encodeAbiParameters(
+    [{
+      type: 'tuple',
+      components: [
+        { type: 'uint256', name: 'templateId' },
+        { type: 'bytes[]', name: 'commandParams' },
+        { type: 'uint256', name: 'skippedCommandPrefix' },
+        {
+          type: 'tuple',
+          name: 'proof',
+          components: [
+            { type: 'string', name: 'domainName' },
+            { type: 'bytes32', name: 'publicKeyHash' },
+            { type: 'uint256', name: 'timestamp' },
+            { type: 'string', name: 'maskedCommand' },
+            { type: 'bytes32', name: 'emailNullifier' },
+            { type: 'bytes32', name: 'accountSalt' },
+            { type: 'bool', name: 'isCodeExist' },
+            { type: 'bytes', name: 'proof' }
+          ]
+        }
+      ]
+    }],
+    [{
+      templateId: emailAuthMsg.templateId,
+      commandParams: emailAuthMsg.commandParams,
+      skippedCommandPrefix: emailAuthMsg.skippedCommandPrefix,
+      proof: emailAuthMsg.proof
+    }]
+  )
+
+
+  log('Encoded email auth message:', smartContractSignature)
+  const isValidSignature = await emailSigner.read.isValidSignature([safeTxHash, smartContractSignature])
+  log('isValidSignature:', isValidSignature)
+
+  return smartContractSignature
+}
+
+async function main() {
+  const emailSignerAddress = await getOrDeployEmailSigner(accountCode, email)
+  const safeInstance = await setupSafe(emailSignerAddress)
+  await depositInitialFunds(safeInstance) // deposit some funds to the safe for testing
+  const safeTransaction = await createTestTransaction(safeInstance)
+
+  // Sign transaction with first signer
+  const signedSafeTx = await safeInstance.signTransaction(safeTransaction)
+  log('Transaction signed by first signer:', signedSafeTx)
+
+  // Get transaction hash that other signers can use to sign
+  const safeTxHash = await safeInstance.getTransactionHash(safeTransaction)
+  log('Transaction hash for other signers:', safeTxHash)
+
+  // Request email signature from relayer
+  log('Requesting email signature from relayer...')
+  const smartContractSignature = await getEmailSignature(safeTransaction, emailSignerAddress, safeTxHash)
+
 }
 
 main()
