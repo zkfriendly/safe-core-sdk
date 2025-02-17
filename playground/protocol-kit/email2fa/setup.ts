@@ -28,16 +28,19 @@ interface Config {
 
 const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_ADDRESS_PRIVATE_KEY!
 const RPC_URL = process.env.RPC_URL!
+const RELAYER_URL = 'http://127.0.0.1:8000'
+const EMAIL_SIGNER_FACTORY_ADDRESS = '0x8eFd67b5779a9eD57e464Da18Fd207DBDDB6531f'
+
 const account = privateKeyToAccount(`0x${DEPLOYER_PRIVATE_KEY}`)
 
-const email = "thezdev1@gmail.com"
+const email = "snparvizi75@gmail.com"
 // any random 32 bytes value works
 const accountCode = "0x22a2d51a892f866cf3c6cc4e138ba87a8a5059a1d80dea5b8ee8232034a105b7"
 
 async function main() {
 
   // first get the salt 
-  const { accountSalt } = await fetch('http://relayer.zk.email/api/accountSalt', {
+  const { accountSalt } = await fetch(`${RELAYER_URL}/api/accountSalt`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -56,7 +59,7 @@ async function main() {
   })
 
   const emailSignerFactory = getContract({
-    address: '0xA7DEc2DC5153275E5d90A7d59F3C7B1DEff6E4b2',
+    address: EMAIL_SIGNER_FACTORY_ADDRESS,
     abi: EMAIL_SIGNER_FACTORY_ABI,
     client
   })
@@ -218,13 +221,12 @@ async function main() {
     console.log('DKIM Contract Address:', await emailSigner.read.dkimRegistryAddr())
     console.log('txHashToSign:', txHashToSign.toString())
 
-    const relayerResponse = await fetch('https://relayer.zk.email/api/submit', {
+    const relayerResponse = await fetch(`${RELAYER_URL}/api/submit`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        dkimContractAddress: await emailSigner.read.dkimRegistryAddr(), // Get from Safe contract
         accountCode: accountCode, // Use the actual tx hash
         codeExistsInEmail: true,
         commandTemplate: 'signHash {uint}',
@@ -233,7 +235,6 @@ async function main() {
         emailAddress: email, // This could be fetched from config/env
         subject: 'Safe Transaction Signature Request',
         body: `Please sign the safe transaction`,
-        chain: 'baseSepolia' // This could be determined from the chain ID
       })
     })
 
@@ -250,27 +251,56 @@ async function main() {
 
     // Poll the status endpoint until we get the proof
     console.log('Waiting for email proof...')
-    let emailProof
-    while (!emailProof) {
-      const statusResponse = await fetch(`http://relayer.zk.email/api/status/${emailProofId}`)
-      if (!statusResponse.ok) {
-        throw new Error(`Failed to get proof status: ${await statusResponse.text()}`)
-      }
-      const status = await statusResponse.json()
+    let emailAuthMsg;
+    let retries = 0
+    const maxRetries = 100 // 1 minute maximum wait time
+    while (!emailAuthMsg && retries < maxRetries) {
+      try {
+        console.debug(`Polling for email proof (attempt ${retries + 1}/${maxRetries})...`)
+        const statusResponse = await fetch(`${RELAYER_URL}/api/status/${emailProofId}`)
 
-      if (status.error) {
-        throw new Error(`Error getting proof: ${status.error}`)
-      }
+        if (!statusResponse.ok) {
+          const errorText = await statusResponse.text()
+          console.debug('Status response not OK:', {
+            status: statusResponse.status,
+            statusText: statusResponse.statusText,
+            errorText
+          })
+          throw new Error(`Failed to get proof status: ${errorText}`)
+        }
 
-      if (status.proof) {
-        emailProof = status.proof
-        console.log('Email proof received:', emailProof)
-        break
-      }
+        const status = await statusResponse.json()
+        console.debug('Received status response:', status)
 
-      // Wait 2 seconds before polling again
-      await new Promise(resolve => setTimeout(resolve, 2000))
+        if (status.error) {
+          console.debug('Status contains error:', status.error)
+          throw new Error(`Error getting proof: ${status.error}`)
+        }
+
+        if (status.response) {
+          console.debug('Email proof found in status response')
+          emailAuthMsg = status.response
+          break
+        }
+
+        retries++
+        console.debug(`No proof yet, waiting 2 seconds before retry ${retries + 1}...`)
+        await new Promise(resolve => setTimeout(resolve, 2000))
+
+      } catch (error) {
+        console.debug('Error while polling for proof:', error)
+        retries++
+        console.debug(`Waiting 2 seconds before retry ${retries + 1}...`)
+        await new Promise(resolve => setTimeout(resolve, 2000))
+      }
     }
+
+    if (!emailAuthMsg) {
+      console.debug(`Timed out after ${maxRetries} attempts`)
+      throw new Error('Timed out waiting for email proof')
+    }
+
+    console.log('Email auth message received:', emailAuthMsg)
 
     // const signedSafeTx = await protocolKit.signTransaction(safeTransaction)
     // const executeTxResponse = await protocolKit.executeTransaction(signedSafeTx)
