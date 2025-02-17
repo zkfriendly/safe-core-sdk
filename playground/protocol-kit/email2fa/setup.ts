@@ -1,7 +1,7 @@
 import Safe, { SafeAccountConfig, getSafeAddressFromDeploymentTx } from '@safe-global/protocol-kit'
 import { SafeTransactionDataPartial, SafeVersion } from '@safe-global/types-kit'
 
-import { createPublicClient, createWalletClient, http, keccak256, parseEther } from 'viem'
+import { createPublicClient, createWalletClient, encodeAbiParameters, http, keccak256, parseEther } from 'viem'
 import { getContract } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { baseSepolia } from 'viem/chains'
@@ -256,58 +256,103 @@ async function main() {
     const maxRetries = 100 // 1 minute maximum wait time
     while (!emailAuthMsg && retries < maxRetries) {
       try {
-        console.debug(`Polling for email proof (attempt ${retries + 1}/${maxRetries})...`)
         const statusResponse = await fetch(`${RELAYER_URL}/api/status/${emailProofId}`)
 
         if (!statusResponse.ok) {
           const errorText = await statusResponse.text()
-          console.debug('Status response not OK:', {
-            status: statusResponse.status,
-            statusText: statusResponse.statusText,
-            errorText
-          })
           throw new Error(`Failed to get proof status: ${errorText}`)
         }
 
         const status = await statusResponse.json()
-        console.debug('Received status response:', status)
 
         if (status.error) {
-          console.debug('Status contains error:', status.error)
           throw new Error(`Error getting proof: ${status.error}`)
         }
 
         if (status.response) {
-          console.debug('Email proof found in status response')
           emailAuthMsg = status.response
           break
         }
 
         retries++
-        console.debug(`No proof yet, waiting 2 seconds before retry ${retries + 1}...`)
         await new Promise(resolve => setTimeout(resolve, 2000))
 
       } catch (error) {
-        console.debug('Error while polling for proof:', error)
         retries++
-        console.debug(`Waiting 2 seconds before retry ${retries + 1}...`)
         await new Promise(resolve => setTimeout(resolve, 2000))
       }
     }
 
     if (!emailAuthMsg) {
-      console.debug(`Timed out after ${maxRetries} attempts`)
       throw new Error('Timed out waiting for email proof')
     }
 
     console.log('Email auth message received:', emailAuthMsg)
 
-    // const signedSafeTx = await protocolKit.signTransaction(safeTransaction)
-    // const executeTxResponse = await protocolKit.executeTransaction(signedSafeTx)
-    // console.log('Transfer transaction hash:', executeTxResponse.hash)
+    // Encode the email auth message according to the ABI structure
+    // First encode the EmailProof struct
+    const encodedEmailProof = encodeAbiParameters(
+      [{
+        type: 'tuple',
+        components: [
+          { type: 'string', name: 'domainName' },
+          { type: 'bytes32', name: 'publicKeyHash' },
+          { type: 'uint256', name: 'timestamp' },
+          { type: 'string', name: 'maskedCommand' },
+          { type: 'bytes32', name: 'emailNullifier' },
+          { type: 'bytes32', name: 'accountSalt' },
+          { type: 'bool', name: 'isCodeExist' },
+          { type: 'bytes', name: 'proof' }
+        ]
+      }],
+      [{
+        domainName: emailAuthMsg.proof.domainName,
+        publicKeyHash: emailAuthMsg.proof.publicKeyHash,
+        timestamp: emailAuthMsg.proof.timestamp,
+        maskedCommand: emailAuthMsg.proof.maskedCommand,
+        emailNullifier: emailAuthMsg.proof.emailNullifier,
+        accountSalt: emailAuthMsg.proof.accountSalt,
+        isCodeExist: emailAuthMsg.proof.isCodeExist,
+        proof: emailAuthMsg.proof.proof
+      }]
+    )
 
-    // const txReceipt = await waitForTransactionReceipt(client, { hash: executeTxResponse.hash as `0x${string}` })
-    // console.log('Transfer completed with status:', txReceipt.status)
+    // Then encode the full EmailAuthMsg struct
+    const encodedEmailAuthMsg = encodeAbiParameters(
+      [{
+        type: 'tuple',
+        components: [
+          { type: 'uint256', name: 'templateId' },
+          { type: 'bytes[]', name: 'commandParams' },
+          { type: 'uint256', name: 'skippedCommandPrefix' },
+          {
+            type: 'tuple',
+            name: 'proof',
+            components: [
+              { type: 'string', name: 'domainName' },
+              { type: 'bytes32', name: 'publicKeyHash' },
+              { type: 'uint256', name: 'timestamp' },
+              { type: 'string', name: 'maskedCommand' },
+              { type: 'bytes32', name: 'emailNullifier' },
+              { type: 'bytes32', name: 'accountSalt' },
+              { type: 'bool', name: 'isCodeExist' },
+              { type: 'bytes', name: 'proof' }
+            ]
+          }
+        ]
+      }],
+      [{
+        templateId: emailAuthMsg.templateId,
+        commandParams: emailAuthMsg.commandParams,
+        skippedCommandPrefix: emailAuthMsg.skippedCommandPrefix,
+        proof: emailAuthMsg.proof
+      }]
+    )
+
+    console.log('Encoded email auth message:', encodedEmailAuthMsg)
+
+    const isValidSignature = await emailSigner.read.isValidSignature([safeTxHash, encodedEmailAuthMsg])
+    console.log('isValidSignature:', isValidSignature)
 
   }
 }
