@@ -1,7 +1,7 @@
 import Safe, { SafeAccountConfig, getSafeAddressFromDeploymentTx } from '@safe-global/protocol-kit'
 import { SafeTransactionDataPartial, SafeVersion } from '@safe-global/types-kit'
 
-import { createPublicClient, createWalletClient, encodeAbiParameters, http, keccak256, parseEther } from 'viem'
+import { createPublicClient, createWalletClient, encodeAbiParameters, http, parseEther } from 'viem'
 import { getContract } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { baseSepolia } from 'viem/chains'
@@ -42,9 +42,9 @@ const log = (...args: any[]) => {
 
 const account = privateKeyToAccount(`0x${DEPLOYER_PRIVATE_KEY}`)
 
-const email = "snparvizi75@gmail.com"
+const email = 'snparvizi75@gmail.com'
 // any random 32 bytes value works
-const accountCode = "0x22a2d51a892f866cf3c6cc4e138ba87a8a5059a1d80dea5b8ee8232034a105b7"
+const accountCode = '0x22a2d51a892f866cf3c6cc4e138ba87a8a5059a1d80dea5b8ee8232034a105b7'
 
 // Create cache directory if it doesn't exist
 if (!fs.existsSync(PROOFS_CACHE_DIR)) {
@@ -77,7 +77,7 @@ async function getOrGenerateProof(txNonce: string, txHashToSign: bigint, templat
       templateId: templateId,
       emailAddress: email,
       subject: 'Safe Transaction Signature Request',
-      body: `Please sign the safe transaction`,
+      body: `Please sign the safe transaction`
     })
   })
 
@@ -89,7 +89,7 @@ async function getOrGenerateProof(txNonce: string, txHashToSign: bigint, templat
   const emailProofId = emailSignature.id
 
   // Poll for proof
-  let emailAuthMsg;
+  let emailAuthMsg
   let retries = 0
   const maxRetries = 100
   while (!emailAuthMsg && retries < maxRetries) {
@@ -113,11 +113,10 @@ async function getOrGenerateProof(txNonce: string, txHashToSign: bigint, templat
       }
 
       retries++
-      await new Promise(resolve => setTimeout(resolve, 2000))
-
+      await new Promise((resolve) => setTimeout(resolve, 2000))
     } catch (error) {
       retries++
-      await new Promise(resolve => setTimeout(resolve, 2000))
+      await new Promise((resolve) => setTimeout(resolve, 2000))
     }
   }
 
@@ -144,7 +143,7 @@ const publicClient = createPublicClient({
 })
 
 async function getOrDeployEmailSigner(accountCode: string, email: string) {
-  // first get the salt 
+  // first get the salt
   const { accountSalt } = await fetch(`${RELAYER_URL}/api/accountSalt`, {
     method: 'POST',
     headers: {
@@ -154,7 +153,7 @@ async function getOrDeployEmailSigner(accountCode: string, email: string) {
       accountCode: accountCode,
       emailAddress: email
     })
-  }).then(res => res.json())
+  }).then((res) => res.json())
 
   log('emailAccountSalt: ', accountSalt)
 
@@ -165,7 +164,9 @@ async function getOrDeployEmailSigner(accountCode: string, email: string) {
   })
 
   // get the address of the email signer
-  const emailSignerAddress = await emailSignerFactory.read.predictAddress([accountSalt]) as `0x${string}`
+  const emailSignerAddress = (await emailSignerFactory.read.predictAddress([
+    accountSalt
+  ])) as `0x${string}`
 
   const bytecode = await publicClient.getCode({
     address: emailSignerAddress
@@ -227,7 +228,6 @@ async function setupSafe(emailSignerAddress: string) {
 
   // The Account Abstraction feature is only available for Safes version 1.3.0 and above.
   if (semverSatisfies(safeVersion, '>=1.3.0')) {
-
     const isSafeDeployed = await protocolKit.isSafeDeployed()
     log('Safe Account deployed: ', isSafeDeployed)
 
@@ -298,12 +298,18 @@ async function createTestTransaction(safeInstance: Safe) {
   }
 
   // Create the transaction
-  const safeTransaction = await safeInstance.createTransaction({ transactions: [safeTransactionData] })
+  const safeTransaction = await safeInstance.createTransaction({
+    transactions: [safeTransactionData]
+  })
   log('Transaction created:', safeTransaction)
   return safeTransaction
 }
 
-async function getEmailSignature(safeTransaction: any, emailSignerAddress: string, safeTxHash: string) {
+async function getEmailSignature(
+  safeTransaction: any,
+  emailSignerAddress: string,
+  safeTxHash: string
+) {
   // Get the transaction hash that needs to be signed
   const txHashToSign = BigInt(safeTxHash)
 
@@ -321,45 +327,55 @@ async function getEmailSignature(safeTransaction: any, emailSignerAddress: strin
   log('txHashToSign:', txHashToSign.toString())
 
   // Get or generate proof using transaction nonce as cache key
-  const emailAuthMsg = await getOrGenerateProof(safeTransaction.data.nonce.toString(), txHashToSign, templateId)
+  const emailAuthMsg = await getOrGenerateProof(
+    safeTransaction.data.nonce.toString(),
+    txHashToSign,
+    templateId
+  )
 
   log('Email auth message received:', emailAuthMsg)
 
   // Then encode the full EmailAuthMsg struct
   const smartContractSignature = encodeAbiParameters(
-    [{
-      type: 'tuple',
-      components: [
-        { type: 'uint256', name: 'templateId' },
-        { type: 'bytes[]', name: 'commandParams' },
-        { type: 'uint256', name: 'skippedCommandPrefix' },
-        {
-          type: 'tuple',
-          name: 'proof',
-          components: [
-            { type: 'string', name: 'domainName' },
-            { type: 'bytes32', name: 'publicKeyHash' },
-            { type: 'uint256', name: 'timestamp' },
-            { type: 'string', name: 'maskedCommand' },
-            { type: 'bytes32', name: 'emailNullifier' },
-            { type: 'bytes32', name: 'accountSalt' },
-            { type: 'bool', name: 'isCodeExist' },
-            { type: 'bytes', name: 'proof' }
-          ]
-        }
-      ]
-    }],
-    [{
-      templateId: emailAuthMsg.templateId,
-      commandParams: emailAuthMsg.commandParams,
-      skippedCommandPrefix: emailAuthMsg.skippedCommandPrefix,
-      proof: emailAuthMsg.proof
-    }]
+    [
+      {
+        type: 'tuple',
+        components: [
+          { type: 'uint256', name: 'templateId' },
+          { type: 'bytes[]', name: 'commandParams' },
+          { type: 'uint256', name: 'skippedCommandPrefix' },
+          {
+            type: 'tuple',
+            name: 'proof',
+            components: [
+              { type: 'string', name: 'domainName' },
+              { type: 'bytes32', name: 'publicKeyHash' },
+              { type: 'uint256', name: 'timestamp' },
+              { type: 'string', name: 'maskedCommand' },
+              { type: 'bytes32', name: 'emailNullifier' },
+              { type: 'bytes32', name: 'accountSalt' },
+              { type: 'bool', name: 'isCodeExist' },
+              { type: 'bytes', name: 'proof' }
+            ]
+          }
+        ]
+      }
+    ],
+    [
+      {
+        templateId: emailAuthMsg.templateId,
+        commandParams: emailAuthMsg.commandParams,
+        skippedCommandPrefix: emailAuthMsg.skippedCommandPrefix,
+        proof: emailAuthMsg.proof
+      }
+    ]
   )
 
-
   log('Encoded email auth message:', smartContractSignature)
-  const isValidSignature = await emailSigner.read.isValidSignature([safeTxHash, smartContractSignature])
+  const isValidSignature = await emailSigner.read.isValidSignature([
+    safeTxHash,
+    smartContractSignature
+  ])
   log('isValidSignature:', isValidSignature)
 
   return smartContractSignature
@@ -381,8 +397,11 @@ async function main() {
 
   // Request email signature from relayer
   log('Requesting email signature from relayer...')
-  const smartContractSignature = await getEmailSignature(safeTransaction, emailSignerAddress, safeTxHash)
-
+  const smartContractSignature = await getEmailSignature(
+    safeTransaction,
+    emailSignerAddress,
+    safeTxHash
+  )
 }
 
 main()

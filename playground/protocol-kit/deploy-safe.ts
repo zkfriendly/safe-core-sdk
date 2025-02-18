@@ -29,13 +29,12 @@ const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_ADDRESS_PRIVATE_KEY!
 const RPC_URL = process.env.RPC_URL!
 const account = privateKeyToAccount(`0x${DEPLOYER_PRIVATE_KEY}`)
 
-const email = "thezdev1@gmail.com"
+const email = 'thezdev1@gmail.com'
 // any random 32 bytes value works
-const accountCode = "0x22a2d51a892f866cf3c6cc4e138ba87a8a5059a1d80dea5b8ee8232034a105b7"
+const accountCode = '0x22a2d51a892f866cf3c6cc4e138ba87a8a5059a1d80dea5b8ee8232034a105b7'
 
 async function main() {
-
-  // first get the salt 
+  // first get the salt
   const { accountSalt } = await fetch('http://relayer.zk.email/api/accountSalt', {
     method: 'POST',
     headers: {
@@ -45,7 +44,7 @@ async function main() {
       accountCode: accountCode,
       emailAddress: email
     })
-  }).then(res => res.json())
+  }).then((res) => res.json())
 
   console.log('emailAccountSalt: ', accountSalt)
   const client = createWalletClient({
@@ -54,7 +53,9 @@ async function main() {
     transport: http(RPC_URL)
   })
 
-  const emailSignerFactoryAbi = JSON.parse(fs.readFileSync('playground/protocol-kit/email-signer-factory-abi.json', 'utf8'))
+  const emailSignerFactoryAbi = JSON.parse(
+    fs.readFileSync('playground/protocol-kit/email-signer-factory-abi.json', 'utf8')
+  )
 
   const emailSignerFactory = getContract({
     address: '0xA7DEc2DC5153275E5d90A7d59F3C7B1DEff6E4b2',
@@ -63,7 +64,9 @@ async function main() {
   })
 
   // get the address of the email signer
-  const emailSignerAddress = await emailSignerFactory.read.predictAddress([accountSalt]) as `0x${string}`
+  const emailSignerAddress = (await emailSignerFactory.read.predictAddress([
+    accountSalt
+  ])) as `0x${string}`
 
   // Check if there is already a contract deployed at the email signer address
   const publicClient = createPublicClient({
@@ -127,7 +130,6 @@ async function main() {
 
   // The Account Abstraction feature is only available for Safes version 1.3.0 and above.
   if (semverSatisfies(safeVersion, '>=1.3.0')) {
-
     const isSafeDeployed = await protocolKit.isSafeDeployed()
     console.log('Safe Account deployed: ', isSafeDeployed)
 
@@ -189,7 +191,9 @@ async function main() {
     }
 
     // Create the transaction
-    const safeTransaction = await protocolKit.createTransaction({ transactions: [safeTransactionData] })
+    const safeTransaction = await protocolKit.createTransaction({
+      transactions: [safeTransactionData]
+    })
     console.log('Transaction created:', safeTransaction)
 
     // Sign transaction with first signer
@@ -225,12 +229,14 @@ async function main() {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        dkimContractAddress: "0x56D6d4c18a0B9dE27699c5f9aCa3378313e228C4", // Get from Safe contract
+        dkimContractAddress: '0x56D6d4c18a0B9dE27699c5f9aCa3378313e228C4', // Get from Safe contract
         accountCode: accountCode, // Use the actual tx hash
         codeExistsInEmail: true,
         commandTemplate: 'signHash {uint}',
         commandParams: [BigInt(txHashToSign)], // Use the actual tx hash as bigint
-        templateId: BigInt("63029648564390617484588365829626736364829479039945858919164890330625807687445").toString(16), // Generate unique template ID
+        templateId: BigInt(
+          '63029648564390617484588365829626736364829479039945858919164890330625807687445'
+        ).toString(16), // Generate unique template ID
         emailAddress: email, // This could be fetched from config/env
         subject: 'Safe Transaction Signature Request',
         body: `Please sign the safe transaction`,
@@ -251,7 +257,6 @@ async function main() {
 
     // const txReceipt = await waitForTransactionReceipt(client, { hash: executeTxResponse.hash as `0x${string}` })
     // console.log('Transfer completed with status:', txReceipt.status)
-
   }
 }
 
