@@ -3,7 +3,7 @@ import Safe, {
   getSafeAddressFromDeploymentTx,
   EthSafeSignature
 } from '@safe-global/protocol-kit'
-import { SafeTransactionDataPartial, SafeVersion } from '@safe-global/types-kit'
+import { SafeTransaction, SafeTransactionDataPartial, SafeVersion } from '@safe-global/types-kit'
 
 import {
   createPublicClient,
@@ -38,11 +38,32 @@ interface Config {
   }
 }
 
-const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_ADDRESS_PRIVATE_KEY!
+const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY!
+if (!DEPLOYER_PRIVATE_KEY) {
+  throw new Error('DEPLOYER_PRIVATE_KEY environment variable is required')
+}
+
 const RPC_URL = process.env.RPC_URL!
-const RELAYER_URL = 'http://127.0.0.1:8000'
-const EMAIL_SIGNER_FACTORY_ADDRESS = '0x8eFd67b5779a9eD57e464Da18Fd207DBDDB6531f'
-const ENABLE_LOGS = true // Easy kill switch for logs
+if (!RPC_URL) {
+  throw new Error('RPC_URL environment variable is required')
+}
+
+const RELAYER_URL = process.env.RELAYER_URL!
+if (!RELAYER_URL) {
+  throw new Error('RELAYER_URL environment variable is required')
+}
+
+const EMAIL_SIGNER_FACTORY_ADDRESS = process.env.EMAIL_SIGNER_FACTORY_ADDRESS!
+if (!EMAIL_SIGNER_FACTORY_ADDRESS) {
+  throw new Error('EMAIL_SIGNER_FACTORY_ADDRESS environment variable is required')
+}
+
+const EMAIL_ADDRESS = process.env.EMAIL_ADDRESS!
+if (!EMAIL_ADDRESS) {
+  throw new Error('EMAIL_ADDRESS environment variable is required')
+}
+
+const ENABLE_LOGS = true
 const PROOFS_CACHE_DIR = path.join(__dirname, 'proofs-cache')
 
 const log = (...args: any[]) => {
@@ -53,7 +74,6 @@ const log = (...args: any[]) => {
 
 const account = privateKeyToAccount(`0x${DEPLOYER_PRIVATE_KEY}`)
 
-const email = 'snparvizi75@gmail.com'
 // any random 32 bytes value works
 const accountCode = '0x22a2d51a892f866cf3c6cc4e138ba87a8a5059a1d80dea5b8ee8232034a105b7'
 
@@ -86,7 +106,7 @@ async function getOrGenerateProof(txNonce: string, txHashToSign: bigint, templat
       commandTemplate: 'signHash {uint}',
       commandParams: [txHashToSign.toString()],
       templateId: templateId,
-      emailAddress: email,
+      emailAddress: EMAIL_ADDRESS,
       subject: 'Safe Transaction Signature Request',
       body: `Please sign the safe transaction`
     })
@@ -317,7 +337,7 @@ async function createTestTransaction(safeInstance: Safe) {
 }
 
 async function getEmailSignature(
-  safeTransaction: any,
+  safeTransaction: SafeTransaction,
   emailSignerAddress: string,
   safeTxHash: string
 ) {
@@ -395,7 +415,7 @@ async function getEmailSignature(
 }
 
 async function main() {
-  const emailSignerAddress = await getOrDeployEmailSigner(accountCode, email)
+  const emailSignerAddress = await getOrDeployEmailSigner(accountCode, EMAIL_ADDRESS)
   const safeInstance = await setupSafe(emailSignerAddress)
   await depositInitialFunds(safeInstance) // deposit some funds to the safe for testing
   const safeTransaction = await createTestTransaction(safeInstance)
