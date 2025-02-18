@@ -1,7 +1,18 @@
-import Safe, { SafeAccountConfig, getSafeAddressFromDeploymentTx } from '@safe-global/protocol-kit'
+import Safe, {
+  SafeAccountConfig,
+  getSafeAddressFromDeploymentTx,
+  EthSafeSignature
+} from '@safe-global/protocol-kit'
 import { SafeTransactionDataPartial, SafeVersion } from '@safe-global/types-kit'
 
-import { createPublicClient, createWalletClient, encodeAbiParameters, http, parseEther } from 'viem'
+import {
+  createPublicClient,
+  createWalletClient,
+  encodeAbiParameters,
+  http,
+  parseEther,
+  GetTransactionReceiptReturnType
+} from 'viem'
 import { getContract } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { baseSepolia } from 'viem/chains'
@@ -378,7 +389,9 @@ async function getEmailSignature(
   ])
   log('isValidSignature:', isValidSignature)
 
-  return smartContractSignature
+  const safeSignature = new EthSafeSignature(emailSignerAddress, smartContractSignature, true)
+
+  return safeSignature
 }
 
 async function main() {
@@ -397,11 +410,22 @@ async function main() {
 
   // Request email signature from relayer
   log('Requesting email signature from relayer...')
-  const smartContractSignature = await getEmailSignature(
-    safeTransaction,
-    emailSignerAddress,
-    safeTxHash
-  )
+  const emailSignature = await getEmailSignature(safeTransaction, emailSignerAddress, safeTxHash)
+  // Add email signature to the transaction
+  signedSafeTx.addSignature(emailSignature)
+
+  const executeTxResponse = await safeInstance.executeTransaction(signedSafeTx)
+  if (!executeTxResponse.transactionResponse) {
+    throw new Error('Failed to execute transaction')
+  }
+
+  const receipt = await (
+    executeTxResponse.transactionResponse as {
+      wait: () => Promise<GetTransactionReceiptReturnType>
+    }
+  ).wait()
+
+  console.log(`Executed TX hash: ${receipt.transactionHash}`)
 }
 
 main()
