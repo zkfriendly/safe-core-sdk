@@ -1,7 +1,18 @@
-import Safe, { SafeAccountConfig, getSafeAddressFromDeploymentTx } from '@safe-global/protocol-kit'
-import { SafeTransactionDataPartial, SafeVersion } from '@safe-global/types-kit'
+import Safe, {
+  SafeAccountConfig,
+  getSafeAddressFromDeploymentTx,
+  EthSafeSignature
+} from '@safe-global/protocol-kit'
+import { SafeTransaction, SafeTransactionDataPartial, SafeVersion } from '@safe-global/types-kit'
 
-import { createPublicClient, createWalletClient, encodeAbiParameters, http, keccak256, parseEther } from 'viem'
+import {
+  createPublicClient,
+  createWalletClient,
+  encodeAbiParameters,
+  http,
+  parseEther,
+  GetTransactionReceiptReturnType
+} from 'viem'
 import { getContract } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { baseSepolia } from 'viem/chains'
@@ -27,11 +38,32 @@ interface Config {
   }
 }
 
-const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_ADDRESS_PRIVATE_KEY!
+const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY!
+if (!DEPLOYER_PRIVATE_KEY) {
+  throw new Error('DEPLOYER_PRIVATE_KEY environment variable is required')
+}
+
 const RPC_URL = process.env.RPC_URL!
-const RELAYER_URL = 'http://127.0.0.1:8000'
-const EMAIL_SIGNER_FACTORY_ADDRESS = '0x8eFd67b5779a9eD57e464Da18Fd207DBDDB6531f'
-const ENABLE_LOGS = true // Easy kill switch for logs
+if (!RPC_URL) {
+  throw new Error('RPC_URL environment variable is required')
+}
+
+const RELAYER_URL = process.env.RELAYER_URL!
+if (!RELAYER_URL) {
+  throw new Error('RELAYER_URL environment variable is required')
+}
+
+const EMAIL_SIGNER_FACTORY_ADDRESS = process.env.EMAIL_SIGNER_FACTORY_ADDRESS!
+if (!EMAIL_SIGNER_FACTORY_ADDRESS) {
+  throw new Error('EMAIL_SIGNER_FACTORY_ADDRESS environment variable is required')
+}
+
+const EMAIL_ADDRESS = process.env.EMAIL_ADDRESS!
+if (!EMAIL_ADDRESS) {
+  throw new Error('EMAIL_ADDRESS environment variable is required')
+}
+
+const ENABLE_LOGS = true
 const PROOFS_CACHE_DIR = path.join(__dirname, 'proofs-cache')
 
 const log = (...args: any[]) => {
@@ -42,9 +74,8 @@ const log = (...args: any[]) => {
 
 const account = privateKeyToAccount(`0x${DEPLOYER_PRIVATE_KEY}`)
 
-const email = "snparvizi75@gmail.com"
 // any random 32 bytes value works
-const accountCode = "0x22a2d51a892f866cf3c6cc4e138ba87a8a5059a1d80dea5b8ee8232034a105b7"
+const accountCode = '0x22a2d51a892f866cf3c6cc4e138ba87a8a5059a1d80dea5b8ee8232034a105b7'
 
 // Create cache directory if it doesn't exist
 if (!fs.existsSync(PROOFS_CACHE_DIR)) {
@@ -75,9 +106,9 @@ async function getOrGenerateProof(txNonce: string, txHashToSign: bigint, templat
       commandTemplate: 'signHash {uint}',
       commandParams: [txHashToSign.toString()],
       templateId: templateId,
-      emailAddress: email,
+      emailAddress: EMAIL_ADDRESS,
       subject: 'Safe Transaction Signature Request',
-      body: `Please sign the safe transaction`,
+      body: `Please sign the safe transaction`
     })
   })
 
@@ -89,7 +120,7 @@ async function getOrGenerateProof(txNonce: string, txHashToSign: bigint, templat
   const emailProofId = emailSignature.id
 
   // Poll for proof
-  let emailAuthMsg;
+  let emailAuthMsg
   let retries = 0
   const maxRetries = 100
   while (!emailAuthMsg && retries < maxRetries) {
@@ -113,11 +144,10 @@ async function getOrGenerateProof(txNonce: string, txHashToSign: bigint, templat
       }
 
       retries++
-      await new Promise(resolve => setTimeout(resolve, 2000))
-
+      await new Promise((resolve) => setTimeout(resolve, 2000))
     } catch (error) {
       retries++
-      await new Promise(resolve => setTimeout(resolve, 2000))
+      await new Promise((resolve) => setTimeout(resolve, 2000))
     }
   }
 
@@ -144,7 +174,7 @@ const publicClient = createPublicClient({
 })
 
 async function getOrDeployEmailSigner(accountCode: string, email: string) {
-  // first get the salt 
+  // first get the salt
   const { accountSalt } = await fetch(`${RELAYER_URL}/api/accountSalt`, {
     method: 'POST',
     headers: {
@@ -154,7 +184,7 @@ async function getOrDeployEmailSigner(accountCode: string, email: string) {
       accountCode: accountCode,
       emailAddress: email
     })
-  }).then(res => res.json())
+  }).then((res) => res.json())
 
   log('emailAccountSalt: ', accountSalt)
 
@@ -165,7 +195,9 @@ async function getOrDeployEmailSigner(accountCode: string, email: string) {
   })
 
   // get the address of the email signer
-  const emailSignerAddress = await emailSignerFactory.read.predictAddress([accountSalt]) as `0x${string}`
+  const emailSignerAddress = (await emailSignerFactory.read.predictAddress([
+    accountSalt
+  ])) as `0x${string}`
 
   const bytecode = await publicClient.getCode({
     address: emailSignerAddress
@@ -227,7 +259,6 @@ async function setupSafe(emailSignerAddress: string) {
 
   // The Account Abstraction feature is only available for Safes version 1.3.0 and above.
   if (semverSatisfies(safeVersion, '>=1.3.0')) {
-
     const isSafeDeployed = await protocolKit.isSafeDeployed()
     log('Safe Account deployed: ', isSafeDeployed)
 
@@ -298,12 +329,18 @@ async function createTestTransaction(safeInstance: Safe) {
   }
 
   // Create the transaction
-  const safeTransaction = await safeInstance.createTransaction({ transactions: [safeTransactionData] })
+  const safeTransaction = await safeInstance.createTransaction({
+    transactions: [safeTransactionData]
+  })
   log('Transaction created:', safeTransaction)
   return safeTransaction
 }
 
-async function getEmailSignature(safeTransaction: any, emailSignerAddress: string, safeTxHash: string) {
+async function getEmailSignature(
+  safeTransaction: SafeTransaction,
+  emailSignerAddress: string,
+  safeTxHash: string
+) {
   // Get the transaction hash that needs to be signed
   const txHashToSign = BigInt(safeTxHash)
 
@@ -321,52 +358,64 @@ async function getEmailSignature(safeTransaction: any, emailSignerAddress: strin
   log('txHashToSign:', txHashToSign.toString())
 
   // Get or generate proof using transaction nonce as cache key
-  const emailAuthMsg = await getOrGenerateProof(safeTransaction.data.nonce.toString(), txHashToSign, templateId)
+  const emailAuthMsg = await getOrGenerateProof(
+    safeTransaction.data.nonce.toString(),
+    txHashToSign,
+    templateId
+  )
 
   log('Email auth message received:', emailAuthMsg)
 
   // Then encode the full EmailAuthMsg struct
   const smartContractSignature = encodeAbiParameters(
-    [{
-      type: 'tuple',
-      components: [
-        { type: 'uint256', name: 'templateId' },
-        { type: 'bytes[]', name: 'commandParams' },
-        { type: 'uint256', name: 'skippedCommandPrefix' },
-        {
-          type: 'tuple',
-          name: 'proof',
-          components: [
-            { type: 'string', name: 'domainName' },
-            { type: 'bytes32', name: 'publicKeyHash' },
-            { type: 'uint256', name: 'timestamp' },
-            { type: 'string', name: 'maskedCommand' },
-            { type: 'bytes32', name: 'emailNullifier' },
-            { type: 'bytes32', name: 'accountSalt' },
-            { type: 'bool', name: 'isCodeExist' },
-            { type: 'bytes', name: 'proof' }
-          ]
-        }
-      ]
-    }],
-    [{
-      templateId: emailAuthMsg.templateId,
-      commandParams: emailAuthMsg.commandParams,
-      skippedCommandPrefix: emailAuthMsg.skippedCommandPrefix,
-      proof: emailAuthMsg.proof
-    }]
+    [
+      {
+        type: 'tuple',
+        components: [
+          { type: 'uint256', name: 'templateId' },
+          { type: 'bytes[]', name: 'commandParams' },
+          { type: 'uint256', name: 'skippedCommandPrefix' },
+          {
+            type: 'tuple',
+            name: 'proof',
+            components: [
+              { type: 'string', name: 'domainName' },
+              { type: 'bytes32', name: 'publicKeyHash' },
+              { type: 'uint256', name: 'timestamp' },
+              { type: 'string', name: 'maskedCommand' },
+              { type: 'bytes32', name: 'emailNullifier' },
+              { type: 'bytes32', name: 'accountSalt' },
+              { type: 'bool', name: 'isCodeExist' },
+              { type: 'bytes', name: 'proof' }
+            ]
+          }
+        ]
+      }
+    ],
+    [
+      {
+        templateId: emailAuthMsg.templateId,
+        commandParams: emailAuthMsg.commandParams,
+        skippedCommandPrefix: emailAuthMsg.skippedCommandPrefix,
+        proof: emailAuthMsg.proof
+      }
+    ]
   )
 
-
   log('Encoded email auth message:', smartContractSignature)
-  const isValidSignature = await emailSigner.read.isValidSignature([safeTxHash, smartContractSignature])
+  const isValidSignature = await emailSigner.read.isValidSignature([
+    safeTxHash,
+    smartContractSignature
+  ])
   log('isValidSignature:', isValidSignature)
 
-  return smartContractSignature
+  const safeSignature = new EthSafeSignature(emailSignerAddress, smartContractSignature, true)
+
+  return safeSignature
 }
 
 async function main() {
-  const emailSignerAddress = await getOrDeployEmailSigner(accountCode, email)
+  const emailSignerAddress = await getOrDeployEmailSigner(accountCode, EMAIL_ADDRESS)
   const safeInstance = await setupSafe(emailSignerAddress)
   await depositInitialFunds(safeInstance) // deposit some funds to the safe for testing
   const safeTransaction = await createTestTransaction(safeInstance)
@@ -381,8 +430,22 @@ async function main() {
 
   // Request email signature from relayer
   log('Requesting email signature from relayer...')
-  const smartContractSignature = await getEmailSignature(safeTransaction, emailSignerAddress, safeTxHash)
+  const emailSignature = await getEmailSignature(safeTransaction, emailSignerAddress, safeTxHash)
+  // Add email signature to the transaction
+  signedSafeTx.addSignature(emailSignature)
 
+  const executeTxResponse = await safeInstance.executeTransaction(signedSafeTx)
+  if (!executeTxResponse.transactionResponse) {
+    throw new Error('Failed to execute transaction')
+  }
+
+  const receipt = await (
+    executeTxResponse.transactionResponse as {
+      wait: () => Promise<GetTransactionReceiptReturnType>
+    }
+  ).wait()
+
+  console.log(`Executed TX hash: ${receipt.transactionHash}`)
 }
 
 main()
